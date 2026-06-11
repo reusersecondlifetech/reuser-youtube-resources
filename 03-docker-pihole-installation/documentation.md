@@ -1,75 +1,105 @@
-# Homelab Server Deployment & Pi-hole DNS Configuration Guide
+& Configuration Documentation
 
-This documentation covers the step-by-step process of resolving network port conflicts on Linux, configuring client-side Domain Name System (DNS) settings, testing network propagation, and analyzing deployment troubleshooting history.
+This comprehensive documentation logs every administrative and configuration step executed during this Homelab project—ranging from the initialization of the Proxmox Virtual Machine (VM) to the deployment of a network-wide Pi-hole advertisement blocker.
 
 ---
 
-## 1. Linux Host Network Optimization (Resolving Port 53 Conflicts)
+## 1. Base System & Remote Access Configuration
 
-By default, Ubuntu Server utilizes a local stub resolver that occupies port 53. To deploy a custom DNS container like Pi-hole, this service must be stopped and disabled.
+Following the baseline installation of Ubuntu Server, storage verification was performed via the Proxmox console, confirming a successful root directory disk expansion to a total capacity of 46.94 GB. The host was assigned a static local Internet Protocol (IP) address: `192.168.1.11`.
 
-Execute the following commands in your Command Line Interface (CLI):
+To operate the server in a headless configuration (without a physical or virtual monitor attached), Secure Shell (SSH) remote access was configured. Remote connections are established from the workstation terminal using the following Command Line Interface (CLI) command:
 
 ```bash
-# 1. Stop the active systemd-resolved service immediately
+ssh reuser@192.168.1.11
+```
+Troubleshooting Note: The initial connection failure was caused by a syntax error, where the system hostname (home) was swapped with the actual administrative username (reuser). Utilizing the correct username successfully resolved the authentication issue.
+
+## 2. Package Optimization & Docker Environment Installation
+To ensure system stability and security, the package repository database was updated, followed by a full system upgrade. Subsequently, the Docker runtime engine and its associated Compose plugin utilities were installed:
+
+```Bash
+# Update repository index and upgrade all system packages
+sudo apt update && sudo apt upgrade -y
+
+# Install the Docker engine and Docker Compose core utilities
+sudo apt install docker.io docker-compose -y
+```
+To optimize the development workflow and eliminate the requirement of prepending sudo (superuser do) administrative privileges to every container management command, the user account was appended to the local Docker security group, and group privileges were instantly refreshed:
+
+```Bash
+# Append the 'reuser' account to the Docker system group
+sudo usermod -aG docker reuser
+
+# Apply and activate the new group privileges immediately within the current shell session
+newgrp docker
+```
+
+### 3. Pi-hole DNS Shield Configuration & Troubleshooting
+A. Releasing Port 53 (Mitigating Host Resolver Conflicts)
+Ubuntu Server deploys a native local stub resolver called systemd-resolved, which binds to port 53 by default. This conflict prevents custom Domain Name System (DNS) containers like Pi-hole from binding to the interface. The native service was permanently halted and masked, and the host's own local resolver was manually redirected to Cloudflare's public DNS architecture:
+
+```Bash
+# Halt the active systemd-resolved service daemon
 sudo systemctl stop systemd-resolved
 
-# 2. Prevent the service from starting automatically during system boot
+# Prevent the systemd-resolved service from initiating during system boot
 sudo systemctl disable systemd-resolved
 
-# 3. Remove the existing symbolic link or configuration file
+# Remove the existing system-managed symbolic link configuration file
 sudo rm /etc/resolv.conf
 
-# 4. Create a new static configuration file pointing to an upstream DNS (Cloudflare)
+# Generate a static configuration file pointing to an upstream public DNS resolver
 echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
 ```
 
-## 2. Windows Client Configuration (Directing Traffic to Pi-hole)
-To route your client workstation's network traffic through the newly established Pi-hole shield, manual Internet Protocol Version 4 (TCP/IPv4) settings must be applied.
+## Docker Compose Blueprint Construction
+Within the ~/homelab/pihole working directory, the docker-compose.yml configuration blueprint was structured. Syntax corrections were applied to remove trailing whitespaces, and the legacy version tag was omitted in compliance with the modern Docker Compose V2 specifications.
 
-Press Windows + R on your keyboard to initiate the Run dialog box.
+The finalized, production-ready YAML Ain't Markup Language (YAML) structural design is defined below:
 
-Input ncpa.cpl and press Enter to instantly access the legacy Network Connections Graphical User Interface (GUI).
+```YAML
+services:
+  pihole:
+    container_name: pihole
+    image: pihole/pihole:latest
+    ports:
+      - "53:53/tcp"    # Standard DNS Query Port over TCP
+      - "53:53/udp"    # Standard DNS Query Port over UDP
+      - "8080:80/tcp"  # Redirected Web Graphical User Interface (GUI) HTTP Port
+    environment:
+      TZ: 'Europe/Budapest'                  # Defines the container internal timezone
+      WEBPASSWORD: 'reuser_secret_password'  # Sets the administrative web dashboard access password
+    volumes:
+      - './etc-pihole:/etc/pihole'           # Persistent storage volume for Pi-hole core configurations
+      - './etc-dnsmasq.d:/etc/dnsmasq.d'     # Persistent storage volume for custom DNS replication rules
+    restart: unless-stopped                  # Ensures container auto-restart policies unless manually killed
+```
+The container infrastructure was initialized utilizing the modern Docker V2 execution command:
 
-Identify your active network interface card (Ethernet or Wi-Fi), right-click, and select Properties.
+```Bash
+docker compose up -d
+```
+C. Web Authentication & Network Security Permissions (Pi-hole v6)
+During the initial initialization phase, the web engine dashboard failed to authenticate using the environment variable password parameter. To circumvent this, direct access was forced into the active container run-time environment using the latest Pi-hole v6 CLI management syntax to overwrite the password string:
 
-Double-click on Internet Protocol Version 4 (TCP/IPv4) from the itemized list.
+```Bash
+docker exec -it pihole pihole setpassword
+```
+Following a successful login, the web interface was toggled to Expert Mode, and the Interface settings policy was modified to Permit all origins.
 
-Toggle the selection to: Use the following DNS server addresses.
+## 4. Global Network Integration
+To achieve seamless, automated network-wide protection without modifying every client workstation individually, the local Dynamic Host Configuration Protocol (DHCP) server settings on the primary residential gateway (router) were modified. The primary DNS Server parameter was directed exclusively to the server IP address (192.168.1.11).
 
-Input your home server's static Internet Protocol (IP) address into the Preferred DNS server field:
-192.168.1.11
+Critical Infrastructure Security Dependency: Disabling IPv6
+During router integration, the Internet Protocol Version 6 (IPv6) stack was completely disabled globally across the router.
 
-Leave the Alternate DNS server field entirely blank. This forces the operating system to route all queries exclusively through the Pi-hole instance.
+The Architecture Reason: Modern desktop operating systems and smartphones inherently prioritize IPv6 routing logic over standard Internet Protocol Version 4 (IPv4) connections. If IPv6 remained active, client devices would automatically discover and utilize the upstream Internet Service Provider (ISP) network IPv6 DNS addresses, completely bypassing the IPv4 Pi-hole sinkhole and rendering the advertisement blocking mechanism ineffective.
 
-Click OK on both windows to commit and apply changes.
+To force client machines to adapt to the new infrastructure routing policies immediately without waiting for standard expiration timers, a client-side network lease cache flush must be initiated:
 
-## 3. Verification & Live Network Testing
-Once the client-side network pipeline is adjusted, execute a live test to verify the DNS sinkhole efficiency:
-
-Open a web browser on the configured client machine and visit several high-traffic news platforms or run search queries.
-
-Access the Pi-hole web management dashboard interface and refresh the page (F5).
-
-Verification Metrics: * The Total Queries metric counter will sharply increase.
-
-The Queries Blocked metric will begin counting restricted advertisements and telemetry trackers in real-time.
-
-## 4. Crucial Networking Architecture & Insights
-A. DNS Propagation and DHCP Lease Management
-When altering DNS settings at the router level, client devices (smartphones, Smart TVs, laptops) do not reflect the changes instantaneously. This is because clients operate under pre-existing Dynamic Host Configuration Protocol (DHCP) leases.
-
-The Resolution: It is unnecessary to reboot the entire network router. Instead, toggle the client device's Wi-Fi interface off and on, or cycle through Airplane Mode for 5 seconds. This forces the device to request a new DHCP lease, obtaining the updated Pi-hole DNS server address.
-
-[Hungarian Context / Magyar magyarázat]
-
-Network propagation: Hálózati elterjedés / frissülés.
-
-DHCP lease: Hálózati bérleti szerződés. A router bizonyos időre adja oda az IP és DNS adatokat a gépnek, ami lejáratig nem kér újat. A Wi-Fi ki-be kapcsolásával ezt a bérletet kényszerítjük frissítésre.
-
-## 5. The YouTube Ad-Blocking Framework Constraint
-A common misconception in homelab infrastructure is that a DNS-level sinkhole can neutralize native YouTube application advertisements.
-
-The Root Cause: Standard websites host advertising content on dedicated third-party domains (e.g., ads.example.com), allowing Pi-hole to easily filter them. Conversely, Google delivers YouTube advertisements from the exact same primary domains and content delivery servers as the video stream itself. Restricting the advertisement domain would inadvertently break the core video playback stream.
-
-Alternative Solutions: Client-side application-layer filtering is mandatory for YouTube ad mitigation. Recommended alternatives include the Brave Browser, the uBlock Origin browser extension, or specialized application packages like YouTube ReVanced.
+```DOS
+# Windows command to purge the local DNS resolver cache
+ipconfig /flushdns
+```
+Alternatively, cycling the client device's network interfaces (toggling Wi-Fi off and on, or cycling Airplane Mode for 5 seconds) forces a new DHCP lease negotiation.
